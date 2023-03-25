@@ -92,14 +92,14 @@
 
 
 // **********************************************************
-// 	TOUCH FILTER (moving average)
+// 	FILTER (moving average)
 // **********************************************************
 
-// Enable touch filter(0/1)
-#define XPT2046_FILTER_EN				( 1 )
+// Enable moving average filter(0/1)
+#define XPT2046_FILTER_AVG_EN			( 1 )
 
-// Filter window in samples
-#define XPT2046_FILTER_WIN_SAMP			( 8 )
+// Moving average window in samples
+#define XPT2046_FILTER_AVG_SAMP			( 8 )
 
 
 // USER CODE END...

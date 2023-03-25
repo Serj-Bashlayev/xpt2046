@@ -104,12 +104,12 @@ typedef struct
 	} state;
 } xpt2046_fsm_t;
 
-#if ( 1 == XPT2046_FILTER_EN )
+#if ( XPT2046_FILTER_AVG_EN )
 
 	// Filter data
 	typedef struct
 	{
-		uint16_t samp_buf[ XPT2046_FILTER_WIN_SAMP ];
+		uint16_t samp_buf[ XPT2046_FILTER_AVG_SAMP ];
 		uint32_t sum;
 	} xpt2046_filt_data_t;
 
@@ -184,8 +184,8 @@ static void xpt2046_fsm_calc_factors	(void);
 static void xpt2046_set_cal_point		(const xpt2046_points_t px);
 static void xpt2046_clear_cal_point		(const xpt2046_points_t px);
 
-#if ( XPT2046_FILTER_EN )
-	static void xpt2046_filter_data(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch);
+#if ( XPT2046_FILTER_AVG_EN )
+	static void xpt2046_filter_average(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch);
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -296,8 +296,8 @@ void xpt2046_hndl(void)
 	xpt2046_read_data_from_controler( &X, &Y, &force, &is_pressed );
 
 	// Apply filter
-	#if ( 1 == XPT2046_FILTER_EN )
-		xpt2046_filter_data( &X, &Y, &force, &is_pressed );
+	#if ( XPT2046_FILTER_AVG_EN )
+		xpt2046_filter_average( &X, &Y, &force, &is_pressed );
 	#endif
 
 	// Apply calibration
@@ -381,10 +381,11 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 	}
 }
 
-#if ( XPT2046_FILTER_EN )
+#if ( XPT2046_FILTER_AVG_EN )
 ////////////////////////////////////////////////////////////////////////////////
 /**
-*			Get touch data
+*			Averaging filter.
+*			Save and averages the last [XPT2046_FILTER_AVG_SAMP] values of X, Y, force.
 *
 * @param[out]	p_X		- Pointer to x coordinate
 * @param[out]	p_Y		- Pointer to y coordinate
@@ -393,60 +394,63 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 * @return 		status	- Status of operation
 */
 ////////////////////////////////////////////////////////////////////////////////
-static void xpt2046_filter_data(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch)
+static void xpt2046_filter_average(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch)
 {
 	static xpt2046_filter_t filter;
 	static uint8_t samp_cnt = 0;
-	static bool touch_prev;
-	const uint16_t samp_N = XPT2046_FILTER_WIN_SAMP;
+	static uint8_t samp_head = 0;
 	uint32_t i;
 
-	// New touch detected -> clear old samples
-	if 	(	( true == *p_touch )
-		&& 	( false == touch_prev ))
+	if 	( true == *p_touch )
 	{
-		for ( i = 0; i < samp_N; i++ )
+		if ( samp_cnt >= XPT2046_FILTER_AVG_SAMP )
 		{
-			filter.x.samp_buf[i] = *p_X;
-			filter.y.samp_buf[i] = *p_Y;
-			filter.force.samp_buf[i] = *p_force;
+			// Subtracting the outgoing value
+			filter.x.sum -= filter.x.samp_buf[ samp_head ];
+			filter.y.sum -= filter.y.samp_buf[ samp_head ];
+			filter.force.sum -= filter.force.samp_buf[ samp_head ];
 		}
-	}
 
-	// Store touch
-	touch_prev = *p_touch;
+		// Addition the input value
+		filter.x.sum += *p_X;
+		filter.y.sum += *p_Y;
+		filter.force.sum += *p_force;
 
-	// Fill buffer
-	filter.x.samp_buf[ samp_cnt ] = *p_X;
-	filter.y.samp_buf[ samp_cnt ] = *p_Y;
-	filter.force.samp_buf[ samp_cnt ] = *p_force;
+		// Fill buffer
+		filter.x.samp_buf[ samp_head ] = *p_X;
+		filter.y.samp_buf[ samp_head ] = *p_Y;
+		filter.force.samp_buf[ samp_head ] = *p_force;
 
-	// Increment sample counter
-	if ( samp_cnt >= samp_N - 1 )
-	{
-		samp_cnt = 0;
+		// Increment sample counter
+		if ( samp_cnt < XPT2046_FILTER_AVG_SAMP )
+		{
+			samp_cnt++;
+		}
+
+		// Ring buffer positiion
+		samp_head = (samp_head + 1) % XPT2046_FILTER_AVG_SAMP;
 	}
 	else
 	{
-		samp_cnt++;
+		// No touch detected -> reset filter
+		samp_cnt = 0;
+		filter.x.sum = 0;
+		filter.y.sum = 0;
+		filter.force.sum = 0;
 	}
 
-	filter.x.sum = 0;
-	filter.y.sum = 0;
-	filter.force.sum = 0;
-
-	// Sum
-	for ( i = 0; i < samp_N; i++ )
+	if ( samp_cnt >= XPT2046_FILTER_AVG_SAMP )
 	{
-		filter.x.sum += filter.x.samp_buf[i];
-		filter.y.sum += filter.y.samp_buf[i];
-		filter.force.sum += filter.force.samp_buf[i];
+		// Average
+		*p_X = (uint16_t) (filter.x.sum / XPT2046_FILTER_AVG_SAMP );
+		*p_Y = (uint16_t) (filter.y.sum / XPT2046_FILTER_AVG_SAMP );
+		*p_force = (uint16_t) (filter.force.sum / XPT2046_FILTER_AVG_SAMP );
+	}
+	else
+	{
+		*p_touch = false;
 	}
 
-	// Average
-	*p_X = (uint16_t) (filter.x.sum / samp_N );
-	*p_Y = (uint16_t) (filter.y.sum / samp_N );
-	*p_force = (uint16_t) (filter.force.sum / samp_N );
 }
 #endif
 
