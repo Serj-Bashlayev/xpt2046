@@ -92,7 +92,7 @@ xpt2046_status_t xpt2046_low_if_exchange(const xpt2046_addr_t addr, const xpt204
 	xpt2046_control_t control;
 	xpt2046_result_t result;
 	uint8_t rx_data[3];
-	uint8_t tx_data[3];
+	uint8_t tx_data[3] = {0, 0, 0};
 	uint16_t rx_data_w;
 
 	// Assemble frame

@@ -30,7 +30,8 @@
 #include "../../xpt2046_if.h"
 
 // Display
-#include "drivers/devices/ili9488/ili9488/src/ili9488.h"
+//#include "drivers/devices/ili9488/ili9488/src/ili9488.h"
+#include "../../gui_port.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 // Definitions
@@ -369,6 +370,7 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 	}
 }
 
+#if ( XPT2046_FILTER_EN )
 ////////////////////////////////////////////////////////////////////////////////
 /**
 *			Get touch data
@@ -409,7 +411,7 @@ static void xpt2046_filter_data(uint16_t * const p_X, uint16_t * const p_Y, uint
 	filter.force.samp_buf[ samp_cnt ] = *p_force;
 
 	// Increment sample counter
-	if ( samp_cnt >= samp_N )
+	if ( samp_cnt >= samp_N - 1 )
 	{
 		samp_cnt = 0;
 	}
@@ -435,6 +437,7 @@ static void xpt2046_filter_data(uint16_t * const p_X, uint16_t * const p_Y, uint
 	*p_Y = (uint16_t) (filter.y.sum / samp_N );
 	*p_force = (uint16_t) (filter.force.sum / samp_N );
 }
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 /**
