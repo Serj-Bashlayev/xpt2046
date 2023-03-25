@@ -334,7 +334,6 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 	uint16_t Z2;
 	static uint16_t X_prev;
 	static uint16_t Y_prev;
-	static uint16_t force_prev;
 
 	// Is pressed
 	if ( eXPT2046_INT_ON == xpt2046_low_if_get_int() )
@@ -351,12 +350,16 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 
 		if ( eXPT2046_OK == status )
 		{
-			// Calculate force
-			*p_force = (uint16_t) ((((float) *p_X / 4096.0f ) * (((float) Z2  / (float) Z1 ) - 1.0f )) * 4095.0f );
-
+			if ( Z2 != Z1 )
+            {
+            	// Calculate force
+                // A release is always pressure 0 and a press is always >= 100
+				// 8000 : coefficient
+				// 100  : 100%
+                *p_force = 8000U * 100U * Z1 / (*p_X * (Z2 - Z1));
+			}
 			X_prev = *p_X;
 			Y_prev = *p_Y;
-			force_prev = *p_force;
 		}
 	}
 	else
@@ -366,7 +369,7 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 		// Return old value
 		*p_X = X_prev;
 		*p_Y = Y_prev;
-		*p_force = force_prev;
+		*p_force = 0;
 	}
 }
 
