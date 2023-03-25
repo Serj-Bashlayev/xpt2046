@@ -340,13 +340,21 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 	{
 		*p_is_pressed = true;
 
-		// Get X & Y position
-		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_X_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, p_X );
-		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Y_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, p_Y );
-
 		// Get pressure data
 		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Z1_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, &Z1 );
-		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_YN, eXPT2046_PD_VREF_ON, eXPT2046_START_ON, &Z2 );
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_YN, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, &Z2 );
+
+		// Dummy reading X to reduce noise
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_X_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, NULL );
+
+		// Get X position
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_X_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, p_X );
+
+		// Dummy reading Y to reduce noise
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Y_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, NULL );
+
+		// Get X position
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Y_POS, eXPT2046_PD_VREF_ON, eXPT2046_START_ON, p_Y );
 
 		if ( eXPT2046_OK == status )
 		{
