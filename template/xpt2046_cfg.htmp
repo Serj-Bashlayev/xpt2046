@@ -90,16 +90,96 @@
 #define XPT2046_DISPLAY_MAX_X			( 480 )
 #define XPT2046_DISPLAY_MAX_Y			( 320 )
 
+//***********************************************************
+/*  Filter sequence
+*************************************************************
+   +-----------+  +-----------+  +-----------+  +-----------+
+   | Read data |  | Pressure  |  | Skip      |  | Debounce  |
+   | from      |  | threshold |  | samples   |  |           |
+   | controler |  |           |  |           |  |           |
+   |        X/Y|->|-----------|->|-----------|->|-----------|->.
+   |      force|->|- USE -----|->|-----------|->|-----------|->.
+   | is_pressed|->|- CHANGE --|->|- CHANGE --|->|- CHANGE --|->.
+   +-----------+  +-----------+  +-----------+  +-----------+
+
+   +-----------+  +-----------+  +-----------+  +-----------+
+   | Median    |  | IIR       |  | Averaging |  | Jitter    |
+   |           |  |           |  |           |  |           |
+   |           |  |           |  |           |  |           |     +-------------+
+.->|- CHANGE --|->|- CHANGE --|->|- CHANGE --|->|- CHANGE --|---->| calibration |->
+.->|-----------|->|-----------|->|- CHANGE --|->|-----------|---+ +-------------+
+.->|- CHANGE --|->|- USE -----|->|- CHANGE --|->|- USE -----|-+ |
+   +-----------+  +-----------+  +-----------+  +-----------+ | +----------------->
+                                                              +------------------->
+*/
+// **********************************************************
+// 	TOUCH FILTER (Pressure threshold)
+// **********************************************************
+// Enable filter(0/1)
+#define XPT2046_FILTER_PTHRES_EN		( 1 )
+
+// Filter pressure threshold
+#define XPT2046_FILTER_PTHRES_ON		( 100 )
+#define XPT2046_FILTER_PTHRES_OFF		( 80 )
 
 // **********************************************************
-// 	FILTER (moving average)
+// 	TOUCH FILTER (Skip samples after press)
 // **********************************************************
+// Enable filter(0/1)
+#define XPT2046_FILTER_SKIP_EN			( 1 )
 
-// Enable moving average filter(0/1)
-#define XPT2046_FILTER_AVG_EN			( 1 )
+// Skip first samples
+#define XPT2046_FILTER_SKIP_SAMP		( 2 )
 
-// Moving average window in samples
+// **********************************************************
+//  TOUCH FILTER (Debounce mechanism)
+// **********************************************************
+// Enable filter(0/1)
+#define XPT2046_FILTER_DEBOUNCE_EN		( 1 )
+
+// Filter time in msec
+#define XPT2046_FILTER_DEBOUNCE_TIME	( 50 )
+
+// **********************************************************
+//  TOUCH FILTER (Median filter)
+// **********************************************************
+// Enable filter(0/1)
+#define XPT2046_FILTER_MEDIAN_EN		( 1 )
+
+// Use fast median filter
+//     (fixed window size = 5)
+#define XPT2046_FILTER_USE_FAST_MEDIAN	( 1 )
+
+// Filter window in samples
+#define XPT2046_FILTER_MEDIAN_WIN		( 5 )
+
+// **********************************************************
+//  TOUCH FILTER (IIR)
+// **********************************************************
+// Enable filter(0/1)
+#define XPT2046_FILTER_IIR_EN			( 1 )
+
+// Filter coefficients
+#define XPT2046_FILTER_IIR_N 			( 9 )
+#define XPT2046_FILTER_IIR_D 			( 10 )
+
+// **********************************************************
+// 	TOUCH FILTER (Moving average)
+// **********************************************************
+// Enable filter(0/1)
+#define XPT2046_FILTER_AVG_EN			( 0 )
+
+// Filter window in samples
 #define XPT2046_FILTER_AVG_SAMP			( 8 )
+
+// **********************************************************
+//  TOUCH FILTER (Jitter)
+// **********************************************************
+// Enable filter(0/1)
+#define XPT2046_FILTER_JITTER_EN		( 1 )
+
+// Filter threshold level
+#define XPT2046_FILTER_JITTER_THRES		( 15 )
 
 
 // USER CODE END...
