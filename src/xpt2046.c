@@ -201,9 +201,9 @@ static void xpt2046_filter_jitter(uint16_t * const p_X, uint16_t * const p_Y, ui
 /**
 *		Touch controller initialization
 *
-* @note	After initialization the "IRQ touch line" pin stays low for 6...10 microseconds.<br>
-*       Before calling the "Main touch controller handler" it may be required to use a delay.
-*   	In order to avoid the first false triggering of the touch.
+* @warning  After initialization the "IRQ touch line" pin stays low for 6...10 microseconds.<br>
+*           Before calling the "Main touch controller handler" it may be required to use a delay.
+*           In order to avoid the first false triggering of the touch.
 *
 * @return 	status - Status of operation
 */
@@ -359,10 +359,10 @@ void xpt2046_hndl(void)
 *
 * @note p_is_pressed - input state of IRQ touch line<br>
 *       p_force - pressing force in range:
-*       <li>0        - no pressure
-*       <li>near 60  - pressure with finger
-*       <li>near 100 - pressing with stylus
-*       <li>200..300 - very strong pressure
+*       - 0        - no pressure
+*       - near 60  - pressure with finger
+*       - near 100 - pressing with stylus
+*       - 200..300 - very strong pressure
 *
 * @param[out]	p_X				- Pointer to x coordinate
 * @param[out]	p_Y				- Pointer to y coordinate
@@ -1262,7 +1262,7 @@ static void xpt2046_filter_median(uint16_t *const p_X, uint16_t *const p_Y,
 ////////////////////////////////////////////////////////////////////////////////
 /**
 *		Infinite impulse response filter.
-*   	This is a smoothing filter to remove low-level noise.
+*		This is a smoothing filter to remove low-level noise.
 *
 * @note	There is a trade-off between noise removal (smoothing) and responsiveness.<br>
 *		The parameters N and D specify the level of smoothing in the form of a fraction (N/D).
@@ -1303,14 +1303,11 @@ static void xpt2046_filter_iir(uint16_t *const p_X, uint16_t *const p_Y,
 }
 #endif
 
-//#define XPT2046_FILTER_DEJITTER_WIN ( 4 )
-//xpt2046_filter_dejitter
-
 #if ( XPT2046_FILTER_AVG_EN )
 ////////////////////////////////////////////////////////////////////////////////
 /**
-*			Averaging filter.
-*			Save and averages the last [XPT2046_FILTER_AVG_SAMP] values of X, Y, force.
+*		Averaging filter.
+*		Save and averages the last [XPT2046_FILTER_AVG_SAMP] values of X, Y, force.
 *
 * @param[out]	p_X		- Pointer to x coordinate
 * @param[out]	p_Y		- Pointer to y coordinate
@@ -1382,9 +1379,9 @@ static void xpt2046_filter_average(uint16_t * const p_X, uint16_t * const p_Y, u
 #if ( XPT2046_FILTER_JITTER_EN )
 ////////////////////////////////////////////////////////////////////////////////
 /**
-*   		Jitter filter for raw XY data.
+*		Jitter filter for raw XY data.
 *
-* @note		Removes jitter on the X and Y co-ordinates.
+* @note	Removes jitter on the X and Y co-ordinates.
 *
 * @param[out]	p_X				- Pointer to x coordinate
 * @param[out]	p_Y				- Pointer to y coordinate
