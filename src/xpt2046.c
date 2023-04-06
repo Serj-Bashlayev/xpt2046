@@ -26,12 +26,8 @@
 
 #include "xpt2046.h"
 #include "xpt2046_low_if.h"
-#include "../../xpt2046_cfg.h"
-#include "../../xpt2046_if.h"
-
-// Display
-//#include "drivers/devices/ili9488/ili9488/src/ili9488.h"
-#include "../../gui_port.h"
+#include "xpt2046_cfg.h"
+#include "xpt2046_if.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 // Definitions
@@ -149,20 +145,25 @@ static xpt2046_cal_data_t g_cal_data =
 // FSM handler
 static xpt2046_fsm_t g_cal_fsm;
 
-// Calibration point
-ili9488_circ_attr_t g_cal_circ_attr =
-{
-	.position.radius	= XPT2046_POINT_SIZE,
-
-	.border.enable		= false,
-	.border.width		= 0,
-	.border.color		= eILI9488_COLOR_BLACK,
-
-	.fill.enable		= true,
-};
+// Display drivers for draw calibration points
+static struct {
+	drv_print_str_t   * print_str;
+	drv_draw_point_t  * draw_point;
+	drv_clear_point_t * clear_point;
+} dispaly_driver = { NULL, NULL, NULL };
 
 // Initialization done flag
 static bool gb_is_init = false;
+
+static filter_config_td filter_config = {
+	.pthres   = true,
+	.skip     = true,
+	.debounce = true,
+	.median   = true,
+	.iir      = true,
+	.average  = false,
+	.jitter   = true
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Function prototypes
@@ -229,6 +230,38 @@ xpt2046_status_t xpt2046_init(void)
 	XPT2046_ASSERT( status == eXPT2046_OK );
 
 	return status;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Register drivers for draw on the screen during calibration
+*
+* @note if calibration is not used, it is possible not to register the drivers.
+*		The string print driver can be unregistered.
+*		In this case only the calibration points will be displayed
+*
+* @param[in] ps		- point to fn print string.            void(fn)(char* str, int32_t x, int32_t y);
+* @param[in] dp		- point to fn draw calibration point.  void(fn)(int32_t x, int32_t y);
+* @param[in] cp		- point to fn clear calibration point. void(fn)(int32_t x, int32_t y);
+* @return   void
+*/
+////////////////////////////////////////////////////////////////////////////////
+void xpt2046_register_driver(drv_print_str_t * ps, drv_draw_point_t * dp, drv_clear_point_t * cp)
+{
+	dispaly_driver.print_str = ps;
+	dispaly_driver.draw_point = dp;
+	dispaly_driver.clear_point = cp;
+}
+
+
+void xpt2046_set_filters(const filter_config_td * const fc)
+{
+	memcpy( &filter_config, fc, sizeof(filter_config_td));
+}
+
+void xpt2046_get_filters(filter_config_td * const  fc)
+{
+	memcpy( fc, &filter_config, sizeof(filter_config_td));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -306,35 +339,43 @@ void xpt2046_hndl(void)
 
 	// Apply filters
 	#if XPT2046_FILTER_PTHRES_EN
-		xpt2046_filter_pthres( &X, &Y, &force, &is_pressed );
+		if ( filter_config.pthres == 1 )
+			xpt2046_filter_pthres( &X, &Y, &force, &is_pressed );
 	#endif
 
 	#if XPT2046_FILTER_SKIP_EN
-		xpt2046_filter_skip( &X, &Y, &force, &is_pressed );
+		if ( filter_config.skip == 1 )
+			xpt2046_filter_skip( &X, &Y, &force, &is_pressed );
 	#endif
 
 	#if XPT2046_FILTER_DEBOUNCE_EN
-		xpt2046_filter_debounce( &X, &Y, &force, &is_pressed );
+		if ( filter_config.debounce == 1 )
+			xpt2046_filter_debounce( &X, &Y, &force, &is_pressed );
 	#endif
 
 	#if XPT2046_FILTER_MEDIAN_EN
-	#if XPT2046_FILTER_USE_FAST_MEDIAN
-		xpt2046_filter_median_fast( &X, &Y, &force, &is_pressed );
-	#else
-		xpt2046_filter_median( &X, &Y, &force, &is_pressed );
-	#endif
-	#endif
-
-	#if XPT2046_FILTER_IIR_EN
-		xpt2046_filter_iir( &X, &Y, &force, &is_pressed );
+		if ( filter_config.median == true ) {
+		#if XPT2046_FILTER_USE_FAST_MEDIAN
+			xpt2046_filter_median_fast( &X, &Y, &force, &is_pressed );
+		#else
+			xpt2046_filter_median( &X, &Y, &force, &is_pressed );
+		#endif
+		}
 	#endif
 
 	#if XPT2046_FILTER_AVG_EN
-		xpt2046_filter_average( &X, &Y, &force, &is_pressed );
+		if ( filter_config.average == 1 )
+			xpt2046_filter_average( &X, &Y, &force, &is_pressed );
+	#endif
+
+	#if XPT2046_FILTER_IIR_EN
+		if ( filter_config.iir == 1 )
+			xpt2046_filter_iir( &X, &Y, &force, &is_pressed );
 	#endif
 
 	#if XPT2046_FILTER_JITTER_EN
-		xpt2046_filter_jitter( &X, &Y, &force, &is_pressed );
+		if ( filter_config.jitter == 1 )
+			xpt2046_filter_jitter( &X, &Y, &force, &is_pressed );
 	#endif
 
 	// Apply calibration
@@ -570,8 +611,10 @@ static void xpt2046_fsm_p1_acq(void)
 	if ( true == g_cal_fsm.time.first_entry )
 	{
 		// Calibration info
-		ili9488_set_string_pen( eILI9488_COLOR_BLACK, eILI9488_COLOR_YELLOW, eILI9488_FONT_20 );
-		ili9488_set_string( "Calibration in progress...", 10, 100 );
+		if (dispaly_driver.print_str != NULL) 
+		{
+			dispaly_driver.print_str("Calibration in progress...", 10, 100);
+		}
 
 		// Set up P1
 		xpt2046_set_cal_point( eXPT2046_CAL_P1 );
@@ -701,7 +744,11 @@ static void xpt2046_fsm_p3_acq(void)
 				xpt2046_clear_cal_point( eXPT2046_CAL_P3 );
 
 				// User info
-				ili9488_set_string( "Calibration finished ...   ", 10, 100 );
+				if (dispaly_driver.print_str != NULL)
+				{
+					dispaly_driver.print_str("Calibration finished ...  ", 10, 100);
+				}
+
 			}
 		}
 	}
@@ -744,10 +791,10 @@ static void xpt2046_set_cal_point(const xpt2046_points_t px)
 {
 	if ( px < eXPT2046_CAL_P_NUM_OF )
 	{
-		g_cal_circ_attr.position.start_page = g_cal_data.Dp[ px ].x;
-		g_cal_circ_attr.position.start_col 	= g_cal_data.Dp[ px ].y;
-		g_cal_circ_attr.fill.color			= XPT2046_POINT_COLOR_FG;
-		ili9488_draw_circle( &g_cal_circ_attr );
+		if (dispaly_driver.draw_point != NULL)
+		{
+			dispaly_driver.draw_point(g_cal_data.Dp[ px ].x, g_cal_data.Dp[ px ].y);
+		}
 	}
 }
 
@@ -763,12 +810,10 @@ static void xpt2046_clear_cal_point(const xpt2046_points_t px)
 {
 	if ( px < eXPT2046_CAL_P_NUM_OF )
 	{
-		//ili9488_fill_rectangle( g_cal_data.Dp[ px ].x, g_cal_data.Dp[ px ].y, XPT2046_POINT_SIZE, XPT2046_POINT_SIZE, XPT2046_POINT_COLOR_BG );
-
-		g_cal_circ_attr.position.start_page = g_cal_data.Dp[ px ].x;
-		g_cal_circ_attr.position.start_col 	= g_cal_data.Dp[ px ].y;
-		g_cal_circ_attr.fill.color			= XPT2046_POINT_COLOR_BG;
-		ili9488_draw_circle( &g_cal_circ_attr );
+		if (dispaly_driver.clear_point != NULL)
+		{
+			dispaly_driver.clear_point(g_cal_data.Dp[ px ].x, g_cal_data.Dp[ px ].y);
+		}
 	}
 }
 

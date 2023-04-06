@@ -22,8 +22,8 @@
 // Includes
 ////////////////////////////////////////////////////////////////////////////////
 #include "xpt2046_low_if.h"
-#include "../../xpt2046_cfg.h"
-#include "../../xpt2046_if.h"
+#include "xpt2046_cfg.h"
+#include "xpt2046_if.h"
 
 // For memcpy
 #include "string.h"

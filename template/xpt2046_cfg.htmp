@@ -27,9 +27,6 @@
 #include <stdint.h>
 #include "project_config.h"
 
-// Graphics for calibration
-#include "drivers/devices/ili9488/ili9488/src/ili9488.h"
-
 // USER INCLUDE BEGIN...
 
 // Debug communication port
@@ -75,20 +72,15 @@
 // 	3 POINT CALIBRATION
 // **********************************************************
 
+// Display limitations
+#define XPT2046_DISPLAY_MAX_X			( 320 )
+#define XPT2046_DISPLAY_MAX_Y			( 240 )
+
 // Coordinates
 #define XPT2046_POINT_1_XY				{ 48,  32  }
-#define XPT2046_POINT_2_XY				{ 240, 288 }
-#define XPT2046_POINT_3_XY				{ 432, 160 }
+#define XPT2046_POINT_2_XY				{ XPT2046_DISPLAY_MAX_X / 2, XPT2046_DISPLAY_MAX_Y - 32 }
+#define XPT2046_POINT_3_XY				{ XPT2046_DISPLAY_MAX_X - 48, XPT2046_DISPLAY_MAX_Y / 2 }
 
-// Point graphics
-// NOTE: For know only rectangle is supported
-#define XPT2046_POINT_COLOR_BG			( eILI9488_COLOR_BLACK )
-#define XPT2046_POINT_COLOR_FG			( eILI9488_COLOR_YELLOW )
-#define XPT2046_POINT_SIZE				( 4 )
-
-// Display limitations
-#define XPT2046_DISPLAY_MAX_X			( 480 )
-#define XPT2046_DISPLAY_MAX_Y			( 320 )
 
 //***********************************************************
 /*  Filter sequence
