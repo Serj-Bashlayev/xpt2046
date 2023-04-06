@@ -1,4 +1,30 @@
 ============================================================
+ Version 1.1.0 (06.04.2023)
+============================================================
+
+ Brief:
+ - add filters:
+   + pressure threshold filter
+   + skip samples after press
+   + debounce filter
+   + median filter
+   + fast median filter
+   + IIR filter
+   + jitter filter
+ - add ability to turn on/off filters
+ - new algorithm for calculating pressing force
+ - display the calibration point through the pre-registered drivers
+ - C++ compatibility
+ - fix some bags
+
+ Features:
+
+ Todo:
+
+
+============================================================
+
+============================================================
  Version 1.0.1 (25.07.2021)
 ============================================================
  

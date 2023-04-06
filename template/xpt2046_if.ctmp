@@ -6,8 +6,8 @@
 *@file      xpt2046_if.h
 *@brief     Interface with XPT2046 chip
 *@author    Ziga Miklosic
-*@date      04.07.2021
-*@version	V1.0.1
+*@date      06.04.2023
+*@version	V1.1.0
 */
 ////////////////////////////////////////////////////////////////////////////////
 /**

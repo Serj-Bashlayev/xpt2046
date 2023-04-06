@@ -7,7 +7,7 @@
 *@brief     Low level interface with XPT2046 chip
 *@author    Ziga Miklosic
 *@date      29.06.2021
-*@version	V1.0.1
+*@version	V1.1.0
 */
 ////////////////////////////////////////////////////////////////////////////////
 /**

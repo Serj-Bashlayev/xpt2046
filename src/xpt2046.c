@@ -7,7 +7,7 @@
 *@brief     Application layer function for XPT2046 chip
 *@author    Ziga Miklosic
 *@date      29.06.2021
-*@version	V1.0.1
+*@version	V1.1.0
 */
 ////////////////////////////////////////////////////////////////////////////////
 /**
@@ -26,11 +26,8 @@
 
 #include "xpt2046.h"
 #include "xpt2046_low_if.h"
-#include "../../xpt2046_cfg.h"
-#include "../../xpt2046_if.h"
-
-// Display
-#include "drivers/devices/ili9488/ili9488/src/ili9488.h"
+#include "xpt2046_cfg.h"
+#include "xpt2046_if.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 // Definitions
@@ -103,12 +100,12 @@ typedef struct
 	} state;
 } xpt2046_fsm_t;
 
-#if ( 1 == XPT2046_FILTER_EN )
+#if ( XPT2046_FILTER_AVG_EN )
 
 	// Filter data
 	typedef struct
 	{
-		uint16_t samp_buf[ XPT2046_FILTER_WIN_SAMP ];
+		uint16_t samp_buf[ XPT2046_FILTER_AVG_SAMP ];
 		uint32_t sum;
 	} xpt2046_filt_data_t;
 
@@ -148,20 +145,25 @@ static xpt2046_cal_data_t g_cal_data =
 // FSM handler
 static xpt2046_fsm_t g_cal_fsm;
 
-// Calibration point
-ili9488_circ_attr_t g_cal_circ_attr =
-{
-	.position.radius	= XPT2046_POINT_SIZE,
-
-	.border.enable		= false,
-	.border.width		= 0,
-	.border.color		= eILI9488_COLOR_BLACK,
-
-	.fill.enable		= true,
-};
+// Display drivers for draw calibration points
+static struct {
+	drv_print_str_t   * print_str;
+	drv_draw_point_t  * draw_point;
+	drv_clear_point_t * clear_point;
+} dispaly_driver = { NULL, NULL, NULL };
 
 // Initialization done flag
 static bool gb_is_init = false;
+
+static filter_config_td filter_config = {
+	.pthres   = true,
+	.skip     = true,
+	.debounce = true,
+	.median   = true,
+	.iir      = true,
+	.average  = false,
+	.jitter   = true
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Function prototypes
@@ -183,9 +185,14 @@ static void xpt2046_fsm_calc_factors	(void);
 static void xpt2046_set_cal_point		(const xpt2046_points_t px);
 static void xpt2046_clear_cal_point		(const xpt2046_points_t px);
 
-#if ( XPT2046_FILTER_EN )
-	static void xpt2046_filter_data(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch);
-#endif
+static void xpt2046_filter_pthres(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_is_pressed);
+static void xpt2046_filter_skip(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_is_pressed);
+static void xpt2046_filter_debounce(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_is_pressed);
+static void xpt2046_filter_median_fast(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_is_pressed);
+static void xpt2046_filter_median(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_is_pressed);
+static void xpt2046_filter_iir(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch);
+static void xpt2046_filter_average(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch);
+static void xpt2046_filter_jitter(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch);
 
 ////////////////////////////////////////////////////////////////////////////////
 // Functions
@@ -194,6 +201,10 @@ static void xpt2046_clear_cal_point		(const xpt2046_points_t px);
 ////////////////////////////////////////////////////////////////////////////////
 /**
 *		Touch controller initialization
+*
+* @warning  After initialization the "IRQ touch line" pin stays low for 6...10 microseconds.<br>
+*           Before calling the "Main touch controller handler" it may be required to use a delay.
+*           In order to avoid the first false triggering of the touch.
 *
 * @return 	status - Status of operation
 */
@@ -219,6 +230,38 @@ xpt2046_status_t xpt2046_init(void)
 	XPT2046_ASSERT( status == eXPT2046_OK );
 
 	return status;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Register drivers for draw on the screen during calibration
+*
+* @note if calibration is not used, it is possible not to register the drivers.
+*		The string print driver can be unregistered.
+*		In this case only the calibration points will be displayed
+*
+* @param[in] ps		- point to fn print string.            void(fn)(char* str, int32_t x, int32_t y);
+* @param[in] dp		- point to fn draw calibration point.  void(fn)(int32_t x, int32_t y);
+* @param[in] cp		- point to fn clear calibration point. void(fn)(int32_t x, int32_t y);
+* @return   void
+*/
+////////////////////////////////////////////////////////////////////////////////
+void xpt2046_register_driver(drv_print_str_t * ps, drv_draw_point_t * dp, drv_clear_point_t * cp)
+{
+	dispaly_driver.print_str = ps;
+	dispaly_driver.draw_point = dp;
+	dispaly_driver.clear_point = cp;
+}
+
+
+void xpt2046_set_filters(const filter_config_td * const fc)
+{
+	memcpy( &filter_config, fc, sizeof(filter_config_td));
+}
+
+void xpt2046_get_filters(filter_config_td * const  fc)
+{
+	memcpy( fc, &filter_config, sizeof(filter_config_td));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -294,9 +337,45 @@ void xpt2046_hndl(void)
 	// Get data
 	xpt2046_read_data_from_controler( &X, &Y, &force, &is_pressed );
 
-	// Apply filter
-	#if ( 1 == XPT2046_FILTER_EN )
-		xpt2046_filter_data( &X, &Y, &force, &is_pressed );
+	// Apply filters
+	#if XPT2046_FILTER_PTHRES_EN
+		if ( filter_config.pthres == 1 )
+			xpt2046_filter_pthres( &X, &Y, &force, &is_pressed );
+	#endif
+
+	#if XPT2046_FILTER_SKIP_EN
+		if ( filter_config.skip == 1 )
+			xpt2046_filter_skip( &X, &Y, &force, &is_pressed );
+	#endif
+
+	#if XPT2046_FILTER_DEBOUNCE_EN
+		if ( filter_config.debounce == 1 )
+			xpt2046_filter_debounce( &X, &Y, &force, &is_pressed );
+	#endif
+
+	#if XPT2046_FILTER_MEDIAN_EN
+		if ( filter_config.median == true ) {
+		#if XPT2046_FILTER_USE_FAST_MEDIAN
+			xpt2046_filter_median_fast( &X, &Y, &force, &is_pressed );
+		#else
+			xpt2046_filter_median( &X, &Y, &force, &is_pressed );
+		#endif
+		}
+	#endif
+
+	#if XPT2046_FILTER_AVG_EN
+		if ( filter_config.average == 1 )
+			xpt2046_filter_average( &X, &Y, &force, &is_pressed );
+	#endif
+
+	#if XPT2046_FILTER_IIR_EN
+		if ( filter_config.iir == 1 )
+			xpt2046_filter_iir( &X, &Y, &force, &is_pressed );
+	#endif
+
+	#if XPT2046_FILTER_JITTER_EN
+		if ( filter_config.jitter == 1 )
+			xpt2046_filter_jitter( &X, &Y, &force, &is_pressed );
 	#endif
 
 	// Apply calibration
@@ -319,6 +398,13 @@ void xpt2046_hndl(void)
 /**
 *		Read data from controller
 *
+* @note p_is_pressed - input state of IRQ touch line<br>
+*       p_force - pressing force in range:
+*       - 0        - no pressure
+*       - near 60  - pressure with finger
+*       - near 100 - pressing with stylus
+*       - 200..300 - very strong pressure
+*
 * @param[out]	p_X				- Pointer to x coordinate
 * @param[out]	p_Y				- Pointer to y coordinate
 * @param[out]	p_force			- Pointer to pressure (force) of touch
@@ -333,29 +419,46 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 	uint16_t Z2;
 	static uint16_t X_prev;
 	static uint16_t Y_prev;
-	static uint16_t force_prev;
 
 	// Is pressed
 	if ( eXPT2046_INT_ON == xpt2046_low_if_get_int() )
 	{
 		*p_is_pressed = true;
 
-		// Get X & Y position
-		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_X_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, p_X );
-		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Y_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, p_Y );
-
 		// Get pressure data
 		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Z1_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, &Z1 );
-		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_YN, eXPT2046_PD_VREF_ON, eXPT2046_START_ON, &Z2 );
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_YN, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, &Z2 );
+
+		// Dummy reading X to reduce noise
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_X_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, NULL );
+
+		// Get X position
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_X_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, p_X );
+
+		// Dummy reading Y to reduce noise
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Y_POS, eXPT2046_PD_DEVICE_FULLY_ON, eXPT2046_START_ON, NULL );
+
+		// Get X position
+		status |= xpt2046_low_if_exchange( eXPT2046_ADDR_Y_POS, eXPT2046_PD_VREF_ON, eXPT2046_START_ON, p_Y );
 
 		if ( eXPT2046_OK == status )
 		{
-			// Calculate force
-			*p_force = (uint16_t) ((((float) *p_X / 4096.0f ) * (((float) Z2  / (float) Z1 ) - 1.0f )) * 4095.0f );
-
+			if ( Z2 != Z1 )
+            {
+				// The following algorithm for calculating the pressing force
+				// is slightly dependent on the location on the screen.
+				// Linearly depends on the pressing force and is in the range:
+				// 0         - no pressure
+				// About 50  - pressure with finger
+				// About 100 - pressing with stylus
+				// 200..300  - very strong pressure
+				// 
+				// 8000 : coefficient
+				// 100  : 100%
+                *p_force = 8000U * 100U * Z1 / (*p_X * (Z2 - Z1));
+			}
 			X_prev = *p_X;
 			Y_prev = *p_Y;
-			force_prev = *p_force;
 		}
 	}
 	else
@@ -365,75 +468,8 @@ static void xpt2046_read_data_from_controler(uint16_t * const p_X, uint16_t * co
 		// Return old value
 		*p_X = X_prev;
 		*p_Y = Y_prev;
-		*p_force = force_prev;
+		*p_force = 0;
 	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-/**
-*			Get touch data
-*
-* @param[out]	p_X		- Pointer to x coordinate
-* @param[out]	p_Y		- Pointer to y coordinate
-* @param[out]	p_force	- Pointer to pressure (force) of touch
-* @param[out]	p_touch	- Pointer to touch detected state
-* @return 		status	- Status of operation
-*/
-////////////////////////////////////////////////////////////////////////////////
-static void xpt2046_filter_data(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch)
-{
-	static xpt2046_filter_t filter;
-	static uint8_t samp_cnt = 0;
-	static bool touch_prev;
-	const uint16_t samp_N = XPT2046_FILTER_WIN_SAMP;
-	uint32_t i;
-
-	// New touch detected -> clear old samples
-	if 	(	( true == *p_touch )
-		&& 	( false == touch_prev ))
-	{
-		for ( i = 0; i < samp_N; i++ )
-		{
-			filter.x.samp_buf[i] = *p_X;
-			filter.y.samp_buf[i] = *p_Y;
-			filter.force.samp_buf[i] = *p_force;
-		}
-	}
-
-	// Store touch
-	touch_prev = *p_touch;
-
-	// Fill buffer
-	filter.x.samp_buf[ samp_cnt ] = *p_X;
-	filter.y.samp_buf[ samp_cnt ] = *p_Y;
-	filter.force.samp_buf[ samp_cnt ] = *p_force;
-
-	// Increment sample counter
-	if ( samp_cnt >= samp_N )
-	{
-		samp_cnt = 0;
-	}
-	else
-	{
-		samp_cnt++;
-	}
-
-	filter.x.sum = 0;
-	filter.y.sum = 0;
-	filter.force.sum = 0;
-
-	// Sum
-	for ( i = 0; i < samp_N; i++ )
-	{
-		filter.x.sum += filter.x.samp_buf[i];
-		filter.y.sum += filter.y.samp_buf[i];
-		filter.force.sum += filter.force.samp_buf[i];
-	}
-
-	// Average
-	*p_X = (uint16_t) (filter.x.sum / samp_N );
-	*p_Y = (uint16_t) (filter.y.sum / samp_N );
-	*p_force = (uint16_t) (filter.force.sum / samp_N );
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -574,8 +610,11 @@ static void xpt2046_fsm_p1_acq(void)
 
 	if ( true == g_cal_fsm.time.first_entry )
 	{
-		// Clear display
-		ili9488_set_background( eILI9488_COLOR_BLACK );
+		// Calibration info
+		if (dispaly_driver.print_str != NULL) 
+		{
+			dispaly_driver.print_str("Calibration in progress...", 10, 100);
+		}
 
 		// Set up P1
 		xpt2046_set_cal_point( eXPT2046_CAL_P1 );
@@ -703,6 +742,13 @@ static void xpt2046_fsm_p3_acq(void)
 
 				// Clear point
 				xpt2046_clear_cal_point( eXPT2046_CAL_P3 );
+
+				// User info
+				if (dispaly_driver.print_str != NULL)
+				{
+					dispaly_driver.print_str("Calibration finished ...  ", 10, 100);
+				}
+
 			}
 		}
 	}
@@ -745,10 +791,10 @@ static void xpt2046_set_cal_point(const xpt2046_points_t px)
 {
 	if ( px < eXPT2046_CAL_P_NUM_OF )
 	{
-		g_cal_circ_attr.position.start_page = g_cal_data.Dp[ px ].x;
-		g_cal_circ_attr.position.start_col 	= g_cal_data.Dp[ px ].y;
-		g_cal_circ_attr.fill.color			= XPT2046_POINT_COLOR_FG;
-		ili9488_draw_circle( &g_cal_circ_attr );
+		if (dispaly_driver.draw_point != NULL)
+		{
+			dispaly_driver.draw_point(g_cal_data.Dp[ px ].x, g_cal_data.Dp[ px ].y);
+		}
 	}
 }
 
@@ -764,12 +810,10 @@ static void xpt2046_clear_cal_point(const xpt2046_points_t px)
 {
 	if ( px < eXPT2046_CAL_P_NUM_OF )
 	{
-		//ili9488_fill_rectangle( g_cal_data.Dp[ px ].x, g_cal_data.Dp[ px ].y, XPT2046_POINT_SIZE, XPT2046_POINT_SIZE, XPT2046_POINT_COLOR_BG );
-
-		g_cal_circ_attr.position.start_page = g_cal_data.Dp[ px ].x;
-		g_cal_circ_attr.position.start_col 	= g_cal_data.Dp[ px ].y;
-		g_cal_circ_attr.fill.color			= XPT2046_POINT_COLOR_BG;
-		ili9488_draw_circle( &g_cal_circ_attr );
+		if (dispaly_driver.clear_point != NULL)
+		{
+			dispaly_driver.clear_point(g_cal_data.Dp[ px ].x, g_cal_data.Dp[ px ].y);
+		}
 	}
 }
 
@@ -919,13 +963,24 @@ bool xpt2046_is_calibrated(void)
 * @return 		status 		- Status of operation
 */
 ////////////////////////////////////////////////////////////////////////////////
-void xpt2046_set_cal_factors(const int32_t * const p_factors)
+xpt2046_status_t xpt2046_set_cal_factors(const int32_t * const p_factors)
 {
-	// Calibration already done some time in past
-	g_cal_data.done = true;
+	xpt2046_status_t status = eXPT2046_OK;
 
-	// Copy factors
-	memcpy( &g_cal_data.factors, p_factors, sizeof( g_cal_data.factors ));
+	if ( NULL != p_factors )
+	{
+		// Calibration already done some time in past
+		g_cal_data.done = true;
+
+		// Copy factors
+		memcpy( &g_cal_data.factors, p_factors, sizeof( g_cal_data.factors ));
+	}
+	else
+	{
+		status = eXPT2046_ERROR;
+	}
+
+	return status;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -936,10 +991,491 @@ void xpt2046_set_cal_factors(const int32_t * const p_factors)
 * @return 		status 		- Status of operation
 */
 ////////////////////////////////////////////////////////////////////////////////
-void xpt2046_get_cal_factors(const int32_t * p_factors)
+xpt2046_status_t xpt2046_get_cal_factors(const int32_t * p_factors)
 {
-	p_factors = (int32_t*) &g_cal_data.factors;
+	xpt2046_status_t status = eXPT2046_OK;
+
+	if ( NULL != p_factors )
+	{
+		// Copy factors
+		memcpy( (void*) p_factors, (void*) &g_cal_data.factors, sizeof( g_cal_data.factors ));
+	}
+	else
+	{
+		status = eXPT2046_ERROR;
+	}
+
+	return status;
 }
+
+
+#if ( XPT2046_FILTER_PTHRES_EN )
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Pressure threshold filter.
+*
+* @note	Given that a release is always pressure 0 and a press is always >= 100,
+*		this discards samples below / above the specified pressure threshold.
+*
+* @param[out]	p_X				- Pointer to x coordinate
+* @param[out]	p_Y				- Pointer to y coordinate
+* @param[out]	p_force			- Pointer to pressure (force) of touch
+* @param[out]	p_is_pressed	- Pointer to pressed state
+* @return 		void
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_pthres(uint16_t *const p_X, uint16_t *const p_Y,
+								  uint16_t *const p_force, bool *const p_is_pressed)
+{
+	static bool mem_pressed = false;
+
+	if ( *p_force > XPT2046_FILTER_PTHRES_ON )
+	{
+		mem_pressed = true;
+	}
+	else if ( *p_force < XPT2046_FILTER_PTHRES_OFF )
+	{
+		mem_pressed = false;
+	}
+
+	*p_is_pressed = mem_pressed;
+}
+#endif
+
+
+#if ( XPT2046_FILTER_SKIP_EN )
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Skip samples after press.
+*
+* @note	This should help if the first samples are unreliable for the device.
+*
+* @param[out]	p_X				- Pointer to x coordinate
+* @param[out]	p_Y				- Pointer to y coordinate
+* @param[out]	p_force			- Pointer to pressure (force) of touch
+* @param[out]	p_is_pressed	- Pointer to pressed state
+* @return 		void
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_skip(uint16_t *const p_X, uint16_t *const p_Y,
+								uint16_t *const p_force, bool *const p_is_pressed)
+{
+	static int counter = 0;
+	bool mem_pressed;
+
+	mem_pressed = false;
+
+	if ( *p_is_pressed == true )
+	{
+		if ( counter >= XPT2046_FILTER_SKIP_SAMP )
+		{
+			mem_pressed = true;
+		}
+		else
+		{
+			counter++;
+		}
+	}
+	else
+	{
+		counter = 0;
+	}
+
+	*p_is_pressed = mem_pressed;
+}
+#endif
+
+
+#if ( XPT2046_FILTER_DEBOUNCE_EN )
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Simple debounce mechanism that drops input events for
+*		the specified time after a touch gesture stopped.
+*
+* @param[out]	p_X				- Pointer to x coordinate
+* @param[out]	p_Y				- Pointer to y coordinate
+* @param[out]	p_force			- Pointer to pressure (force) of touch
+* @param[out]	p_is_pressed	- Pointer to pressed state
+* @return 		void
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_debounce(uint16_t *const p_X, uint16_t *const p_Y,
+									uint16_t *const p_force, bool *const p_is_pressed)
+{
+	static uint32_t release_milis;
+	static bool mem_pressed;
+
+	uint32_t milis = HAL_GetTick();
+
+	if ( *p_is_pressed == false )
+	{
+		if ( mem_pressed == true )
+		{
+			release_milis = milis;
+		}
+	}
+	else
+	{
+		if ( milis < (uint32_t)( release_milis + XPT2046_FILTER_DEBOUNCE_TIME ) )
+		{
+			*p_is_pressed = false;
+		}
+		//release_milis = milis;
+	}
+
+	mem_pressed = *p_is_pressed;
+}
+#endif
+
+
+#if ( XPT2046_FILTER_MEDIAN_EN )
+#if ( XPT2046_FILTER_USE_FAST_MEDIAN )
+
+static void fast_median_cmp_swap(uint16_t *p_a, uint16_t *p_b)
+{
+	uint16_t tmp;
+
+	if ( *p_a > *p_b )
+	{
+		tmp = *p_a;
+		*p_a = *p_b;
+		*p_b = tmp;
+	}
+}
+
+
+static uint16_t fast_median(uint16_t *p_array)
+{
+	uint16_t sort_array[5];
+
+	memcpy( sort_array, p_array, sizeof(sort_array) );
+
+	// Sorting the work array in increasing order
+	fast_median_cmp_swap( &sort_array[0], &sort_array[1] );
+	fast_median_cmp_swap( &sort_array[2], &sort_array[3] );
+	fast_median_cmp_swap( &sort_array[0], &sort_array[2] );
+	fast_median_cmp_swap( &sort_array[1], &sort_array[4] );
+	fast_median_cmp_swap( &sort_array[0], &sort_array[1] );
+	fast_median_cmp_swap( &sort_array[2], &sort_array[3] );
+	fast_median_cmp_swap( &sort_array[1], &sort_array[2] );
+	fast_median_cmp_swap( &sort_array[3], &sort_array[4] );
+	fast_median_cmp_swap( &sort_array[2], &sort_array[3] );
+
+	return sort_array[2];
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		The median filter reduces noise in the samples' coordinate values.
+*		It is able to filter undesired single large jumps in the signal.
+*
+* @param[out]	p_X				- Pointer to x coordinate
+* @param[out]	p_Y				- Pointer to y coordinate
+* @param[out]	p_force			- Pointer to pressure (force) of touch
+* @param[out]	p_is_pressed	- Pointer to pressed state
+* @return   	void
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_median_fast(uint16_t *const p_X, uint16_t *const p_Y,
+									   uint16_t *const p_force, bool *const p_is_pressed)
+{
+	static uint16_t x_mediane[5];
+	static uint16_t y_mediane[5];
+	static uint8_t samp_cnt = 0;
+	static uint8_t samp_head = 0;
+
+	// collect data
+	if ( *p_is_pressed == true )
+	{
+		x_mediane[samp_head] = *p_X;
+		y_mediane[samp_head] = *p_Y;
+
+		if ( samp_cnt < 5 )
+		{
+			samp_cnt++;
+		}
+
+		// Ring buffer positiion
+		samp_head = (samp_head + 1) % 5;
+	}
+	else
+	{
+		samp_cnt = 0;
+	}
+
+	if ( samp_cnt == 5 )
+	{
+		*p_X = fast_median( x_mediane );
+		*p_Y = fast_median( y_mediane );
+	}
+	else
+	{
+		*p_is_pressed = false;
+	}
+}
+
+#else // ( XPT2046_FILTER_USE_FAST_MEDIAN )
+
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		The median filter reduces noise in the samples' coordinate values.
+*		It is able to filter undesired single large jumps in the signal.
+*
+* @param[out]	p_X				- Pointer to x coordinate
+* @param[out]	p_Y				- Pointer to y coordinate
+* @param[out]	p_force			- Pointer to pressure (force) of touch
+* @param[out]	p_is_pressed	- Pointer to pressed state
+* @return   	void
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_median(uint16_t *const p_X, uint16_t *const p_Y,
+								  uint16_t *const p_force, bool *const p_is_pressed)
+{
+	static uint16_t x_mediane[XPT2046_FILTER_MEDIAN_WIN];
+	static uint16_t y_mediane[XPT2046_FILTER_MEDIAN_WIN];
+	static uint16_t sort_array[XPT2046_FILTER_MEDIAN_WIN];
+	static uint8_t samp_cnt = 0;
+	static uint8_t samp_head = 0;
+
+	// collect data
+	if ( *p_is_pressed == true )
+	{
+		x_mediane[samp_head] = *p_X;
+		y_mediane[samp_head] = *p_Y;
+
+		if ( samp_cnt < XPT2046_FILTER_MEDIAN_WIN )
+		{
+			samp_cnt++;
+		}
+
+		// Ring buffer positiion
+		samp_head = (samp_head + 1) % XPT2046_FILTER_MEDIAN_WIN;
+
+	}
+	else
+	{
+		samp_cnt = 0;
+	}
+
+	if ( samp_cnt == XPT2046_FILTER_MEDIAN_WIN )
+	{
+		memcpy( sort_array, x_mediane, sizeof(sort_array) );
+		// Sorting the work array in descending order
+		for ( int ab = 0; ab < (XPT2046_FILTER_MEDIAN_WIN - 1); ab++ )
+		{
+			for ( int aa = (ab + 1); aa < XPT2046_FILTER_MEDIAN_WIN; aa++ )
+			{
+				if ( sort_array[ab] < sort_array[aa] )
+				{ // SWAP
+					int swap_temp = sort_array[ab];
+					sort_array[ab] = sort_array[aa];
+					sort_array[aa] = swap_temp;
+				}
+			}
+		}
+		// Select the middle element
+		*p_X = sort_array[XPT2046_FILTER_MEDIAN_WIN / 2];
+
+		memcpy( sort_array, y_mediane, sizeof(sort_array) );
+		// Sorting the work array in descending order
+		for ( int ab = 0; ab < (XPT2046_FILTER_MEDIAN_WIN - 1); ab++ )
+		{
+			for ( int aa = (ab + 1); aa < XPT2046_FILTER_MEDIAN_WIN; aa++ )
+			{
+				if ( sort_array[ab] < sort_array[aa] )
+				{ // SWAP
+					int swap_temp = sort_array[ab];
+					sort_array[ab] = sort_array[aa];
+					sort_array[aa] = swap_temp;
+				}
+			}
+		}
+		// Select the middle element
+		*p_Y = sort_array[XPT2046_FILTER_MEDIAN_WIN / 2];
+	}
+	else
+	{
+		*p_is_pressed = false;
+	}
+}
+
+
+#endif // ( XPT2046_FILTER_USE_FAST_MEDIAN )
+#endif // ( XPT2046_FILTER_MEDIAN_EN )
+
+#if ( XPT2046_FILTER_IIR_EN )
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Infinite impulse response filter.
+*		This is a smoothing filter to remove low-level noise.
+*
+* @note	There is a trade-off between noise removal (smoothing) and responsiveness.<br>
+*		The parameters N and D specify the level of smoothing in the form of a fraction (N/D).
+*
+* @param[out]	p_X				- Pointer to x coordinate
+* @param[out]	p_Y				- Pointer to y coordinate
+* @param[out]	p_force			- Pointer to pressure (force) of touch
+* @param[out]	p_is_pressed	- Pointer to pressed state
+* @return   	void
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_iir(uint16_t *const p_X, uint16_t *const p_Y,
+							   uint16_t *const p_force, bool *const p_is_pressed)
+{
+	static bool mem_pressed = false;
+	static int32_t x_s = 0;
+	static int32_t y_s = 0;
+	const int32_t N = XPT2046_FILTER_IIR_N;
+	const int32_t D = XPT2046_FILTER_IIR_D;
+
+	if ( *p_is_pressed == true )
+	{
+		if ( mem_pressed == true)
+		{
+			x_s = (N * x_s + (D - N) * *p_X + D / 2) / D;
+			y_s = (N * y_s + (D - N) * *p_Y + D / 2) / D;
+			*p_X = x_s;
+			*p_Y = y_s;
+		}
+		else
+		{
+			x_s = *p_X;
+			y_s = *p_Y;
+		}
+	}
+
+	mem_pressed = *p_is_pressed;
+}
+#endif
+
+#if ( XPT2046_FILTER_AVG_EN )
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Averaging filter.
+*		Save and averages the last [XPT2046_FILTER_AVG_SAMP] values of X, Y, force.
+*
+* @param[out]	p_X		- Pointer to x coordinate
+* @param[out]	p_Y		- Pointer to y coordinate
+* @param[out]	p_force	- Pointer to pressure (force) of touch
+* @param[out]	p_touch	- Pointer to touch detected state
+* @return 		status	- Status of operation
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_average(uint16_t * const p_X, uint16_t * const p_Y, uint16_t * const p_force, bool * const p_touch)
+{
+	static xpt2046_filter_t filter;
+	static uint8_t samp_cnt = 0;
+	static uint8_t samp_head = 0;
+	uint32_t i;
+
+	if 	( true == *p_touch )
+	{
+		if ( samp_cnt >= XPT2046_FILTER_AVG_SAMP )
+		{
+			// Subtracting the outgoing value
+			filter.x.sum -= filter.x.samp_buf[ samp_head ];
+			filter.y.sum -= filter.y.samp_buf[ samp_head ];
+			filter.force.sum -= filter.force.samp_buf[ samp_head ];
+		}
+
+		// Addition the input value
+		filter.x.sum += *p_X;
+		filter.y.sum += *p_Y;
+		filter.force.sum += *p_force;
+
+		// Fill buffer
+		filter.x.samp_buf[ samp_head ] = *p_X;
+		filter.y.samp_buf[ samp_head ] = *p_Y;
+		filter.force.samp_buf[ samp_head ] = *p_force;
+
+		// Increment sample counter
+		if ( samp_cnt < XPT2046_FILTER_AVG_SAMP )
+		{
+			samp_cnt++;
+		}
+
+		// Ring buffer positiion
+		samp_head = (samp_head + 1) % XPT2046_FILTER_AVG_SAMP;
+	}
+	else
+	{
+		// No touch detected -> reset filter
+		samp_cnt = 0;
+		filter.x.sum = 0;
+		filter.y.sum = 0;
+		filter.force.sum = 0;
+	}
+
+	if ( samp_cnt >= XPT2046_FILTER_AVG_SAMP )
+	{
+		// Average
+		*p_X = (uint16_t) (filter.x.sum / XPT2046_FILTER_AVG_SAMP );
+		*p_Y = (uint16_t) (filter.y.sum / XPT2046_FILTER_AVG_SAMP );
+		*p_force = (uint16_t) (filter.force.sum / XPT2046_FILTER_AVG_SAMP );
+	}
+	else
+	{
+		*p_touch = false;
+	}
+
+}
+#endif
+
+#if ( XPT2046_FILTER_JITTER_EN )
+////////////////////////////////////////////////////////////////////////////////
+/**
+*		Jitter filter for raw XY data.
+*
+* @note	Removes jitter on the X and Y co-ordinates.
+*
+* @param[out]	p_X				- Pointer to x coordinate
+* @param[out]	p_Y				- Pointer to y coordinate
+* @param[out]	p_force			- Pointer to pressure (force) of touch
+* @param[out]	p_is_pressed	- Pointer to pressed state
+* @return   	void
+*/
+////////////////////////////////////////////////////////////////////////////////
+static void xpt2046_filter_jitter(uint16_t * const p_X, uint16_t * const p_Y,
+								  uint16_t * const p_force, bool * const p_is_pressed)
+{
+	static uint16_t x_prev;
+	static uint16_t y_prev;
+	static bool mem_pressed = false;
+
+	if ( *p_is_pressed == true && mem_pressed == true )
+	{
+		if ( *p_X > x_prev + XPT2046_FILTER_JITTER_THRES )
+		{
+			*p_X = *p_X - XPT2046_FILTER_JITTER_THRES;
+		}
+		else if ( *p_X < x_prev - XPT2046_FILTER_JITTER_THRES )
+		{
+			*p_X = *p_X + XPT2046_FILTER_JITTER_THRES;
+		}
+		else
+		{
+			*p_X = x_prev;
+		}
+
+		if ( *p_Y > y_prev + XPT2046_FILTER_JITTER_THRES )
+		{
+			*p_Y = *p_Y - XPT2046_FILTER_JITTER_THRES;
+		}
+		else if ( *p_Y < y_prev - XPT2046_FILTER_JITTER_THRES )
+		{
+			*p_Y = *p_Y + XPT2046_FILTER_JITTER_THRES;
+		}
+		else
+		{
+			*p_Y = y_prev;
+		}
+	}
+
+	mem_pressed = *p_is_pressed;
+	x_prev = *p_X;
+	y_prev = *p_Y;
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 /**
